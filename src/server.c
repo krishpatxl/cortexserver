@@ -3,6 +3,7 @@
 #include "../include/threadpool.h"
 
 #include <netinet/in.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,22 +39,24 @@ static void handle_request(void *arg)
 {
     RequestJob *job = (RequestJob *)arg;
 
-    static long total = 0, ok = 0, not_found = 0;
+    // thread-safe counters
+    static atomic_long total = 0;
+    static atomic_long ok = 0;
+    static atomic_long not_found = 0;
 
     HttpRequest r;
     if (http_parse_request_line(job->buf, job->len, &r) != 0) {
+        atomic_fetch_add(&not_found, 1);
         reply_text(job->fd, 404, "bad request\n");
         close(job->fd);
         free(job);
         return;
     }
 
-    // NOTE: these counters aren't perfectly thread-safe yet.
-    // We'll fix that in the next step (atomic or a mutex).
-    total++;
+    atomic_fetch_add(&total, 1);
 
     if (strcmp(r.method, "GET") != 0) {
-        not_found++;
+        atomic_fetch_add(&not_found, 1);
         reply_text(job->fd, 404, "only GET for now\n");
         close(job->fd);
         free(job);
@@ -61,20 +64,26 @@ static void handle_request(void *arg)
     }
 
     if (strcmp(r.path, "/") == 0) {
-        ok++;
+        atomic_fetch_add(&ok, 1);
         reply_text(job->fd, 200, "CortexServer\nTry /health or /metrics\n");
     } else if (strcmp(r.path, "/health") == 0) {
-        ok++;
+        atomic_fetch_add(&ok, 1);
         reply_text(job->fd, 200, "OK\n");
     } else if (strcmp(r.path, "/metrics") == 0) {
-        ok++;
+        atomic_fetch_add(&ok, 1);
+
+        long t = atomic_load(&total);
+        long o = atomic_load(&ok);
+        long nf = atomic_load(&not_found);
+
         char out[256];
         snprintf(out, sizeof(out),
                  "requests_total %ld\nrequests_ok %ld\nrequests_404 %ld\n",
-                 total, ok, not_found);
+                 t, o, nf);
+
         reply_text(job->fd, 200, out);
     } else {
-        not_found++;
+        atomic_fetch_add(&not_found, 1);
         reply_text(job->fd, 404, "not found\n");
     }
 
@@ -136,6 +145,12 @@ int start_server(int port)
         buf[n] = '\0';
 
         RequestJob *job = (RequestJob *)calloc(1, sizeof(RequestJob));
+        if (!job) {
+            reply_text(c, 404, "server error\n");
+            close(c);
+            continue;
+        }
+
         job->fd = c;
         job->len = (size_t)n;
         memcpy(job->buf, buf, (size_t)n + 1);
@@ -147,6 +162,7 @@ int start_server(int port)
         }
     }
 
+    // not reached, but here for completeness
     tp_destroy(tp);
     close(s);
     return 0;

@@ -1,8 +1,8 @@
 CC=clang
-CFLAGS=-Wall -Wextra -Wpedantic -O2 -Iinclude
+CFLAGS=-Wall -Wextra -Wpedantic -O2 -Iinclude -pthread
 
 TARGET=cortexserver
-SRC=src/main.c src/server.c src/http.c
+SRC=src/main.c src/server.c src/http.c src/threadpool.c
 OBJ=$(SRC:.c=.o)
 
 all: $(TARGET)

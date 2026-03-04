@@ -1,24 +1,20 @@
 CC=clang
 CFLAGS=-Wall -Wextra -Wpedantic -O2 -Iinclude
-LDFLAGS=
 
-SRC=$(wildcard src/*.c)
+TARGET=cortexserver
+SRC=src/main.c src/server.c src/http.c
 OBJ=$(SRC:.c=.o)
 
-BIN=cortexserver
+all: $(TARGET)
 
-all: $(BIN)
-
-$(BIN): $(OBJ)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+$(TARGET): $(OBJ)
+	$(CC) $(CFLAGS) -o $@ $(OBJ)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f src/*.o $(BIN)
+	rm -f $(OBJ) $(TARGET)
 
-run: all
-	./$(BIN)
-
-.PHONY: all clean run
+run: $(TARGET)
+	./$(TARGET)

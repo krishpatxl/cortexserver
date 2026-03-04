@@ -1,6 +1,6 @@
-#include <stdio.h>
+#include "../include/server.h"
 
-int main(void) {
-    printf("CortexServer starting...\n");
-    return 0;
+int main(void)
+{
+    return start_server(8080);
 }

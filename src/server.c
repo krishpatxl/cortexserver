@@ -1,6 +1,7 @@
 #include "../include/server.h"
 #include "../include/http.h"
 #include "../include/threadpool.h"
+#include "../include/files.h"
 
 #include <netinet/in.h>
 #include <stdatomic.h>
@@ -16,6 +17,10 @@ typedef struct {
     size_t len;
 } RequestJob;
 
+static atomic_long total = 0;
+static atomic_long ok = 0;
+static atomic_long not_found = 0;
+
 static void reply_text(int fd, int status, const char *body)
 {
     const char *msg = (status == 200) ? "200 OK" : "404 Not Found";
@@ -23,13 +28,17 @@ static void reply_text(int fd, int status, const char *body)
     char head[512];
     int body_len = (int)strlen(body);
 
-    int n = snprintf(head, sizeof(head),
-                     "HTTP/1.1 %s\r\n"
-                     "Content-Type: text/plain\r\n"
-                     "Content-Length: %d\r\n"
-                     "Connection: close\r\n"
-                     "\r\n",
-                     msg, body_len);
+    int n = snprintf(
+        head,
+        sizeof(head),
+        "HTTP/1.1 %s\r\n"
+        "Content-Type: text/plain\r\n"
+        "Content-Length: %d\r\n"
+        "Connection: close\r\n"
+        "\r\n",
+        msg,
+        body_len
+    );
 
     send(fd, head, (size_t)n, 0);
     send(fd, body, (size_t)body_len, 0);
@@ -38,11 +47,6 @@ static void reply_text(int fd, int status, const char *body)
 static void handle_request(void *arg)
 {
     RequestJob *job = (RequestJob *)arg;
-
-    // thread-safe counters
-    static atomic_long total = 0;
-    static atomic_long ok = 0;
-    static atomic_long not_found = 0;
 
     HttpRequest r;
     if (http_parse_request_line(job->buf, job->len, &r) != 0) {
@@ -64,11 +68,17 @@ static void handle_request(void *arg)
     }
 
     if (strcmp(r.path, "/") == 0) {
-        atomic_fetch_add(&ok, 1);
-        reply_text(job->fd, 200, "CortexServer\nTry /health or /metrics\n");
+        if (send_file_response(job->fd, "public/index.html") == 0) {
+            atomic_fetch_add(&ok, 1);
+        } else {
+            atomic_fetch_add(&not_found, 1);
+            reply_text(job->fd, 404, "index file not found\n");
+        }
+
     } else if (strcmp(r.path, "/health") == 0) {
         atomic_fetch_add(&ok, 1);
         reply_text(job->fd, 200, "OK\n");
+
     } else if (strcmp(r.path, "/metrics") == 0) {
         atomic_fetch_add(&ok, 1);
 
@@ -77,11 +87,36 @@ static void handle_request(void *arg)
         long nf = atomic_load(&not_found);
 
         char out[256];
-        snprintf(out, sizeof(out),
-                 "requests_total %ld\nrequests_ok %ld\nrequests_404 %ld\n",
-                 t, o, nf);
+        snprintf(
+            out,
+            sizeof(out),
+            "requests_total %ld\nrequests_ok %ld\nrequests_404 %ld\n",
+            t,
+            o,
+            nf
+        );
 
         reply_text(job->fd, 200, out);
+
+    } else if (strncmp(r.path, "/static/", 8) == 0) {
+        const char *rel = r.path + 8;
+
+        // basic path traversal protection
+        if (strstr(rel, "..") != NULL) {
+            atomic_fetch_add(&not_found, 1);
+            reply_text(job->fd, 404, "invalid path\n");
+        } else {
+            char full_path[512];
+            snprintf(full_path, sizeof(full_path), "public/%s", rel);
+
+            if (send_file_response(job->fd, full_path) == 0) {
+                atomic_fetch_add(&ok, 1);
+            } else {
+                atomic_fetch_add(&not_found, 1);
+                reply_text(job->fd, 404, "file not found\n");
+            }
+        }
+
     } else {
         atomic_fetch_add(&not_found, 1);
         reply_text(job->fd, 404, "not found\n");
@@ -162,7 +197,6 @@ int start_server(int port)
         }
     }
 
-    // not reached, but here for completeness
     tp_destroy(tp);
     close(s);
     return 0;
